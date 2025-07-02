@@ -1,0 +1,9 @@
+    # Ignorar a pasta de módulos do Node.js
+    node_modules/
+    # Ignorar o arquivo do banco de dados SQLite (ele será recriado no Render)
+    data/
+    # Ignorar arquivos de log
+    *.log
+    # Ignorar variáveis de ambiente (se você as usar no futuro)
+    .env
+    
