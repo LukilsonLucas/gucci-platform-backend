@@ -1,31 +1,35 @@
-// backend/app.js (ou server.js)
+// backend/app.js
+
 const express = require('express');
+const bodyParser = require('body-parser');
+const userController = require('./controllers/userController');
+
+// Não precisamos importar 'db' ou 'initializeDb' aqui,
+// pois a inicialização do Firestore é feita em firebaseConfig.js
+// e o 'db' é importado diretamente nos controllers.
+// const db = require('./database/database'); // REMOVA OU COMENTE ESTA LINHA
+// const { initializeDb } = require('./database/database'); // REMOVA OU COMENTE ESTA LINHA
+
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-// Importa a instância do banco de dados
-const db = require('./database/database');
+// Middleware para analisar corpos de solicitação JSON
+app.use(bodyParser.json());
 
-// Middleware para analisar corpos de requisição JSON
-// Isso é essencial para que o Express possa ler os dados enviados no formato JSON
-// em requisições POST, PUT, etc.
-app.use(express.json());
+// Rota de cadastro de usuário
+app.post('/register', userController.registerUser);
 
-// Importa as rotas de usuário.
-// Ainda vamos criar este arquivo em breve.
-const userRoutes = require('./routes/users');
-
-// Usa as rotas de usuário.
-// Todas as rotas definidas em 'users.js' serão prefixadas com '/api/users'.
-app.use('/api/users', userRoutes);
-
-// Rota de teste simples para a raiz
+// Rota de teste simples para verificar se o servidor está funcionando
 app.get('/', (req, res) => {
-  res.send('Backend da Plataforma GUCCI está funcionando!');
+  res.send('Backend da plataforma Gucci está online e funcionando!');
 });
 
-// Inicia o servidor na porta especificada
-app.listen(port, () => {
-  console.log(`Servidor rodando em http://localhost:${port}`);
-  // O banco de dados já será conectado quando database.js for importado.
+// Inicia o servidor
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
+
+// Não precisamos mais chamar initializeDb() aqui,
+// pois o Firestore é inicializado automaticamente via firebaseConfig.js
+// ao ser importado pelos controllers.
+// initializeDb(); // REMOVA OU COMENTE ESTA LINHA
