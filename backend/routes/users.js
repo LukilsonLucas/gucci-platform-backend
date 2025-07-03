@@ -4,11 +4,13 @@ const express = require('express');
 const router = express.Router(); // Cria um novo objeto router para lidar com as rotas
 const userController = require('../controllers/userController'); // Importa o controlador de usuário
 
+// --- ROTAS DO USUÁRIO ---
+
 // Rota para o cadastro de um novo usuário
 router.post('/register', userController.registerUser);
 
 // Rota para o login de usuário
-router.post('/login', userController.loginUser); // Certifique-se que esta rota existe no seu app.js
+router.post('/login', userController.loginUser);
 
 // Rota para atualizar o perfil do usuário
 router.put('/profile', userController.updateProfile);
@@ -19,8 +21,6 @@ router.put('/change-password', userController.changePassword);
 // Rota para o usuário realizar a tarefa diária
 router.post('/daily-task', userController.dailyTask);
 
-// --- NOVAS ROTAS PARA DEPÓSITO E SAQUE ---
-
 // Rota para o usuário solicitar um depósito
 router.post('/request-deposit', userController.requestDeposit);
 
@@ -28,6 +28,7 @@ router.post('/request-deposit', userController.requestDeposit);
 router.post('/request-withdrawal', userController.requestWithdrawal);
 
 // --- ROTAS ADMINISTRATIVAS ---
+// (Estas rotas devem ser protegidas no futuro para garantir que apenas admins as acessem)
 
 // Rota para o administrador listar todos os usuários
 router.get('/admin/users', userController.adminGetUsers);
