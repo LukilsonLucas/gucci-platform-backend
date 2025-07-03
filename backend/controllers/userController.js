@@ -36,10 +36,10 @@ exports.registerUser = async (req, res) => {
       phone_number: phone_number,
       password: hashedPassword,
       level: 0,
-      total_accumulated: 0,
+      total_accumulated: 0, // Inicia com 0, só acumula ganhos de tarefas/convites
       daily_task_earning: 0,
       total_invite_earning: 0,
-      total_withdrawn: 0, // NOVO CAMPO: Total de saques aprovados
+      total_withdrawn: 0, // Total de saques aprovados
       invite_link: invite_link,
       name: null,
       bank: null,
@@ -277,6 +277,7 @@ exports.requestWithdrawal = async (req, res) => {
     });
 
     // Atualiza a data do último saque do usuário
+    // A data do último saque é atualizada AQUI, no momento da SOLICITAÇÃO
     await userRef.update({
       last_withdrawal_date: today
     });
@@ -354,14 +355,16 @@ exports.adminApproveDeposit = async (req, res) => {
     }
 
     const user = userDoc.data();
-    const newTotalAccumulated = user.total_accumulated + amount;
 
-    // Atualiza o saldo do usuário
-    t.update(userRef, { total_accumulated: newTotalAccumulated });
-    // Atualiza o status do pedido de depósito
+    // REMOVIDO: A linha que somava o valor do depósito ao total_accumulated do usuário.
+    // O total_accumulated só deve refletir ganhos de tarefas e convites.
+    // const newTotalAccumulated = user.total_accumulated + amount; // ESTA LINHA FOI REMOVIDA
+
+    // Atualiza APENAS o status do pedido de depósito
     t.update(depositRef, { status: 'approved' });
 
     // Se o usuário foi convidado por alguém, o convidante ganha 1000 Kz
+    // ESTA LÓGICA PERMANECE, POIS É UM GANHO PARA O CONVIDANTE
     if (user.invited_by) {
       const invitedByRef = db.collection('users').where('invite_link', '==', user.invited_by).limit(1);
       const invitedBySnapshot = await t.get(invitedByRef);
@@ -377,12 +380,13 @@ exports.adminApproveDeposit = async (req, res) => {
       }
     }
 
-    return { newTotalAccumulated };
+    // Retorna o total_accumulated atual do usuário (sem o valor do depósito)
+    return { newTotalAccumulated: user.total_accumulated };
   });
 
   try {
     const result = await transaction;
-    res.status(200).json({ message: `Depósito de ${amount} Kz aprovado para o usuário ${userId}. Novo saldo: ${result.newTotalAccumulated} Kz.` });
+    res.status(200).json({ message: `Depósito de ${amount} Kz aprovado para o usuário ${userId}. O saldo acumulado não inclui o valor do depósito, apenas ganhos.`, newTotalAccumulated: result.newTotalAccumulated });
   } catch (error) {
     console.error('Erro ao aprovar depósito (transação):', error.message);
     res.status(500).json({ message: error.message || 'Erro interno do servidor ao aprovar depósito.' });
@@ -457,10 +461,10 @@ exports.adminApproveWithdrawal = async (req, res) => {
     }
 
     const newTotalAccumulated = user.total_accumulated - amount;
-    // ATUALIZAÇÃO: Deduz o valor do saque do total_accumulated
+    // ATUALIZAÇÃO: Deduz o valor do saque do total_accumulated e incrementa o total_withdrawn
     t.update(userRef, {
       total_accumulated: newTotalAccumulated,
-      total_withdrawn: admin.firestore.FieldValue.increment(amount) // NOVO: Incrementa o total sacado
+      total_withdrawn: admin.firestore.FieldValue.increment(amount) // Incrementa o total sacado
     });
     t.update(withdrawalRef, { status: 'approved' });
 
