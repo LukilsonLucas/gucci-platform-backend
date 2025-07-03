@@ -1,6 +1,7 @@
 // backend/controllers/userController.js
 const bcrypt = require('bcrypt'); // Importa a biblioteca bcrypt para hash de senhas
 const db = require('../config/firebaseConfig'); // IMPORTA A INSTÂNCIA DO FIRESTORE
+const admin = require('firebase-admin'); // Importa o admin para usar FieldValue
 
 // Função para registrar um novo usuário
 exports.registerUser = async (req, res) => {
@@ -38,6 +39,7 @@ exports.registerUser = async (req, res) => {
       total_accumulated: 0,
       daily_task_earning: 0,
       total_invite_earning: 0,
+      total_withdrawn: 0, // NOVO CAMPO: Total de saques aprovados
       invite_link: invite_link,
       name: null,
       bank: null,
@@ -45,6 +47,7 @@ exports.registerUser = async (req, res) => {
       is_active: 0, // 0 = inativo, 1 = ativo
       is_admin: 0, // 0 = não admin, 1 = admin
       last_task_date: null,
+      last_withdrawal_date: null, // Campo para controlar o último saque diário
       invited_by: invited_by_link || null // Salva quem o convidou, se houver
     });
 
@@ -188,27 +191,23 @@ exports.dailyTask = async (req, res) => {
     };
     const earning = LEVEL_EARNINGS[user.level] || LEVEL_EARNINGS[0]; // Garante um valor padrão
 
-    const newTotalAccumulated = user.total_accumulated + earning;
-    const newDailyTaskEarning = user.daily_task_earning + earning;
-
+    // Atualiza total_accumulated e daily_task_earning usando FieldValue.increment
     await userRef.update({
-      total_accumulated: newTotalAccumulated,
-      daily_task_earning: newDailyTaskEarning,
+      total_accumulated: admin.firestore.FieldValue.increment(earning),
+      daily_task_earning: admin.firestore.FieldValue.increment(earning),
       last_task_date: today
     });
 
     res.status(200).json({
       message: `Tarefa diária concluída! Você ganhou ${earning} Kz.`,
-      newTotalAccumulated,
-      newDailyTaskEarning,
+      newTotalAccumulated: user.total_accumulated + earning, // Retorna o valor atualizado para o frontend
+      newDailyTaskEarning: user.daily_task_earning + earning, // Retorna o valor atualizado para o frontend
     });
   } catch (error) {
     console.error('Erro ao registrar tarefa diária:', error);
     res.status(500).json({ message: 'Erro interno do servidor ao registrar tarefa diária.' });
   }
 };
-
-// --- NOVAS FUNÇÕES PARA DEPÓSITO E SAQUE ---
 
 // Função para o usuário solicitar um depósito
 exports.requestDeposit = async (req, res) => {
@@ -255,8 +254,17 @@ exports.requestWithdrawal = async (req, res) => {
     }
     const user = userDoc.data();
 
+    // Validação: Saldo suficiente
     if (user.total_accumulated < amount) {
       return res.status(400).json({ message: 'Saldo insuficiente para solicitar o saque.' });
+    }
+
+    // Validação: Saque apenas uma vez por dia
+    const today = new Date().toISOString().split('T')[0];
+    const lastWithdrawalDate = user.last_withdrawal_date ? new Date(user.last_withdrawal_date).toISOString().split('T')[0] : null;
+
+    if (lastWithdrawalDate === today) {
+      return res.status(400).json({ message: 'Você já solicitou um saque hoje. Por favor, aguarde até amanhã.' });
     }
 
     // Adiciona o pedido de saque à coleção 'pending_withdrawals'
@@ -267,6 +275,12 @@ exports.requestWithdrawal = async (req, res) => {
       status: 'pending', // 'pending', 'approved', 'rejected'
       timestamp: new Date().toISOString()
     });
+
+    // Atualiza a data do último saque do usuário
+    await userRef.update({
+      last_withdrawal_date: today
+    });
+
     res.status(201).json({ message: 'Solicitação de saque enviada com sucesso! Aguardando aprovação do administrador.', withdrawalId: withdrawalRef.id });
   } catch (error) {
     console.error('Erro ao solicitar saque:', error);
@@ -325,28 +339,56 @@ exports.adminApproveDeposit = async (req, res) => {
     return res.status(400).json({ message: 'ID do depósito, ID do usuário e valor válidos são obrigatórios.' });
   }
 
-  try {
-    // 1. Atualiza o saldo do usuário
+  const transaction = db.runTransaction(async (t) => {
     const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
+    const depositRef = db.collection('pending_deposits').doc(depositId);
+
+    const userDoc = await t.get(userRef);
+    const depositDoc = await t.get(depositRef);
 
     if (!userDoc.exists) {
-      return res.status(404).json({ message: 'Usuário não encontrado.' });
+      throw new Error('Usuário não encontrado.');
     }
+    if (!depositDoc.exists || depositDoc.data().status !== 'pending') {
+      throw new Error('Depósito não encontrado ou já processado.');
+    }
+
     const user = userDoc.data();
     const newTotalAccumulated = user.total_accumulated + amount;
-    await userRef.update({ total_accumulated: newTotalAccumulated });
 
-    // 2. Atualiza o status do pedido de depósito
-    const depositRef = db.collection('pending_deposits').doc(depositId);
-    await depositRef.update({ status: 'approved' });
+    // Atualiza o saldo do usuário
+    t.update(userRef, { total_accumulated: newTotalAccumulated });
+    // Atualiza o status do pedido de depósito
+    t.update(depositRef, { status: 'approved' });
 
-    res.status(200).json({ message: `Depósito de ${amount} Kz aprovado para o usuário ${userId}. Novo saldo: ${newTotalAccumulated} Kz.` });
+    // Se o usuário foi convidado por alguém, o convidante ganha 1000 Kz
+    if (user.invited_by) {
+      const invitedByRef = db.collection('users').where('invite_link', '==', user.invited_by).limit(1);
+      const invitedBySnapshot = await t.get(invitedByRef);
+
+      if (!invitedBySnapshot.empty) {
+        const invitedByDoc = invitedBySnapshot.docs[0];
+        const invitedByUserRef = db.collection('users').doc(invitedByDoc.id);
+        const inviteEarning = 1000; // Valor da comissão por convite
+        t.update(invitedByUserRef, {
+          total_invite_earning: admin.firestore.FieldValue.increment(inviteEarning),
+          total_accumulated: admin.firestore.FieldValue.increment(inviteEarning)
+        });
+      }
+    }
+
+    return { newTotalAccumulated };
+  });
+
+  try {
+    const result = await transaction;
+    res.status(200).json({ message: `Depósito de ${amount} Kz aprovado para o usuário ${userId}. Novo saldo: ${result.newTotalAccumulated} Kz.` });
   } catch (error) {
-    console.error('Erro ao aprovar depósito:', error);
-    res.status(500).json({ message: 'Erro interno do servidor ao aprovar depósito.' });
+    console.error('Erro ao aprovar depósito (transação):', error.message);
+    res.status(500).json({ message: error.message || 'Erro interno do servidor ao aprovar depósito.' });
   }
 };
+
 
 // Função para o administrador rejeitar um depósito
 exports.adminRejectDeposit = async (req, res) => {
@@ -392,33 +434,53 @@ exports.adminApproveWithdrawal = async (req, res) => {
     return res.status(400).json({ message: `ID do saque, ID do usuário e valor válido (mínimo ${MIN_WITHDRAWAL} Kz) são obrigatórios.` });
   }
 
-  try {
-    // 1. Atualiza o saldo do usuário (deduzindo o valor)
+  const transaction = db.runTransaction(async (t) => {
     const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
+    const withdrawalRef = db.collection('pending_withdrawals').doc(withdrawalId);
+
+    const userDoc = await t.get(userRef);
+    const withdrawalDoc = await t.get(withdrawalRef);
 
     if (!userDoc.exists) {
-      return res.status(404).json({ message: 'Usuário não encontrado.' });
+      throw new Error('Usuário não encontrado.');
     }
+    if (!withdrawalDoc.exists || withdrawalDoc.data().status !== 'pending') {
+      throw new Error('Saque não encontrado ou já processado.');
+    }
+
     const user = userDoc.data();
 
     if (user.total_accumulated < amount) {
       // Isso pode acontecer se o saldo foi gasto entre a solicitação e a aprovação
-      await db.collection('pending_withdrawals').doc(withdrawalId).update({ status: 'rejected', rejection_reason: 'Saldo insuficiente no momento da aprovação.' });
-      return res.status(400).json({ message: 'Saldo insuficiente para aprovar este saque. Saque rejeitado automaticamente.' });
+      t.update(withdrawalRef, { status: 'rejected', rejection_reason: 'Saldo insuficiente no momento da aprovação.' });
+      throw new Error('Saldo insuficiente para aprovar este saque. Saque rejeitado automaticamente.');
     }
 
     const newTotalAccumulated = user.total_accumulated - amount;
-    await userRef.update({ total_accumulated: newTotalAccumulated });
+    // ATUALIZAÇÃO: Deduz o valor do saque do total_accumulated
+    t.update(userRef, {
+      total_accumulated: newTotalAccumulated,
+      total_withdrawn: admin.firestore.FieldValue.increment(amount) // NOVO: Incrementa o total sacado
+    });
+    t.update(withdrawalRef, { status: 'approved' });
 
-    // 2. Atualiza o status do pedido de saque
-    const withdrawalRef = db.collection('pending_withdrawals').doc(withdrawalId);
-    await withdrawalRef.update({ status: 'approved' });
+    // Adiciona o saque aprovado a uma nova coleção 'approved_withdrawals' para histórico
+    await db.collection('approved_withdrawals').add({
+      userId,
+      amount,
+      bankAccountDetails: withdrawalDoc.data().bankAccountDetails,
+      timestamp: new Date().toISOString()
+    });
 
-    res.status(200).json({ message: `Saque de ${amount} Kz aprovado para o usuário ${userId}. Novo saldo: ${newTotalAccumulated} Kz.` });
+    return { newTotalAccumulated };
+  });
+
+  try {
+    const result = await transaction;
+    res.status(200).json({ message: `Saque de ${amount} Kz aprovado para o usuário ${userId}. Novo saldo: ${result.newTotalAccumulated} Kz.` });
   } catch (error) {
-    console.error('Erro ao aprovar saque:', error);
-    res.status(500).json({ message: 'Erro interno do servidor ao aprovar saque.' });
+    console.error('Erro ao aprovar saque (transação):', error.message);
+    res.status(500).json({ message: error.message || 'Erro interno do servidor ao aprovar saque.' });
   }
 };
 
@@ -461,5 +523,29 @@ exports.adminAssignLevel = async (req, res) => {
   } catch (error) {
     console.error('Erro ao atribuir nível:', error);
     res.status(500).json({ message: 'Erro interno do servidor ao atribuir nível.' });
+  }
+};
+
+// Nova função para listar saques aprovados (histórico)
+exports.getApprovedWithdrawals = async (req, res) => {
+  const { userId } = req.query; // Pode ser para um usuário específico ou todos se for admin
+
+  try {
+    let query = db.collection('approved_withdrawals');
+
+    if (userId) {
+      query = query.where('userId', '==', userId);
+    }
+
+    const snapshot = await query.orderBy('timestamp', 'desc').get(); // Ordena por data mais recente
+
+    const approvedWithdrawals = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    res.status(200).json(approvedWithdrawals);
+  } catch (error) {
+    console.error('Erro ao buscar saques aprovados:', error);
+    res.status(500).json({ message: 'Erro interno do servidor ao buscar saques aprovados.' });
   }
 };
