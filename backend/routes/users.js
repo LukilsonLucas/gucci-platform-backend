@@ -9,5 +9,10 @@ const userController = require('../controllers/userController'); // Importa o co
 // a função 'registerUser' do userController será executada.
 router.post('/register', userController.registerUser);
 
+// NOVA ROTA: Rota para alterar a senha do usuário
+// Quando uma requisição PUT é feita para '/api/users/change-password',
+// a função 'changePassword' do userController será executada.
+router.put('/change-password', userController.changePassword);
+
 // Exporta o router para que ele possa ser usado no app.js
 module.exports = router;
